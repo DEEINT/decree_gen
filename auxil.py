@@ -11,6 +11,17 @@ from argparse import ArgumentTypeError
 from PyPDF2 import PdfReader
 from loguru import logger
 
+from pdfminer.layout import LAParams, LTTextBox
+from pdfminer.pdfpage import PDFPage
+from pdfminer.pdfinterp import PDFResourceManager
+from pdfminer.pdfinterp import PDFPageInterpreter
+from pdfminer.converter import PDFPageAggregator
+
+rsrcmgr = PDFResourceManager()
+laparams = LAParams()
+device = PDFPageAggregator(rsrcmgr, laparams=laparams)
+interpreter = PDFPageInterpreter(rsrcmgr, device)
+
 def logger_config(v):
 	logger.remove()
 	if int(v) == 0:
@@ -23,9 +34,9 @@ def logger_config(v):
 	logger.add("logs/gen.log", level = "INFO", rotation="10 MB")
 
 def generate_date(standart_format=False, unixtime=False):
-	day = randint(1, 31)
+	day = randint(1, 28)
 	month = randint(1, 12)
-	year = randint(2000, 2022)
+	year = randint(2012, 2022)
 
 	try:
 		if not standart_format:
@@ -40,7 +51,7 @@ def generate_date(standart_format=False, unixtime=False):
 	else:
 		return date
 
-def check_size_format(size, pat=re.compile(r"^\d*[KMG]B$")):
+def check_size_format(size, pat=re.compile(r"^\d*$")):
 	if not pat.match(size):
 		logger.error(f"Invalid size argument: {size}")
 		raise ArgumentTypeError("Invalid value")
@@ -79,19 +90,13 @@ def to_roman(n):
     return result
 
 def add_numbering(instruction):
-	string_instruction = ""
 
-	for e in instruction:
-		string_instruction += e["task_text"]
-		string_instruction += '\n'
-	instruction = string_instruction[:-1]
-
-	clauses = re.split(r"\{\d*\}", instruction)[1:]
+	clauses = [task["task_text"] for task in instruction if task]
 	numbering_types = [choice(consts.numbering_types) for _ in range(3)]
 	complete_instruction = [{"clause": clauses[0],
-							"index": 1,
-							"nesting_level": 0,
-							"numbering_type": numbering_types[0]}]
+							 "index": 1,
+							 "nesting_level": 0,
+							 "numbering_type": numbering_types[0]}]
 	numbering = [1, 1, 1]
 
 	for indx in range(1, len(clauses)):
@@ -304,140 +309,39 @@ def calculate_borders(original_coords, creator_and_date=False, task=False):
 
 # pdf_path: str - путь к pdf файлу
 # data: tuple - кортеж данных для генерации
-def calculate_text_coords(pdf_path, data):
-	header, header_coords = data[0], []
-	name, name_coords = data[1], []
-	intro, intro_coords = data[2], []
-	instruction, instruction_coords = data[3], [[] * i for i in range(len(data[3]))]
-	responsible, responsible_coords = data[4], []
-	creator, creator_coords = data[5], []
-	date, date_coords = data[6], []
+def calculate_text_coords(pdf_path):
+	fp = open(pdf_path, "rb")
+	pages = PDFPage.get_pages(fp)
+	mas_ab = []
+	ab = []
+	x1_save, x2_save, y1_save, y2_save = -1, -1, -1, -1
+	text_save = ''
+	i = 0
 
-	reader = PdfReader(pdf_path)
-	for page in reader.pages:
-	# page = reader.pages[0]
-
-		raw_data = []
-		def visitor_t(text, cm, tm, fontDict, fontSize):
-			raw_data.append([text, tm[4], tm[5]]) # [text, x1, y1]
-
-		page.extract_text(visitor_text=visitor_t) # Посимвольное извлечение координат текста
-
-		for i in range(len(raw_data)):
-			raw_data[i][1] = int(raw_data[i][1])
-			raw_data[i][2] = int(raw_data[i][2])
-
-		# Объединение символов с одинаковыми координатами в строки
-		# text - список со строками
-		# coords - список с соответствующими строкам координатами
-		text, coords = [], []
-		for i in range(len(raw_data)):
-			if [raw_data[i][1], raw_data[i][2]] not in coords:
-				coords.append([raw_data[i][1], raw_data[i][2]])
-				text.append(raw_data[i][0])
-			else:
-				text[-1] += raw_data[i][0]
-
-		if (len(text) != len(coords)):
-			logger.error("[text] != [coords]")
-			raise SystemExit
-
-		formatted_markup = {}
-		for i in range(len(text)):
-			if text[i] == '':
-				continue
-
-			formatted_markup[text[i]] = coords[i]
-
-		# Если ключ словаря (строка в документе) входит в секцию данных для генерации,
-		# то добавить координаты строки в соответствующий список
-		for k in list(formatted_markup):
-
-			if ((k.replace('\n', '') in header) and (not name_coords)):
-				val = formatted_markup.pop(k)
-				header_coords.append(val)
-
-			if ((k.replace('\n', '') in name) and (not intro_coords)):
-				try:
-					val = formatted_markup.pop(k)
-					name_coords.append(val)
-				except KeyError:
-					pass
-
-			if (k.replace('\n', '') in intro):
-				try:
-					val = formatted_markup.pop(k)
-					intro_coords.append(val)
-				except KeyError:
-					pass
-
-			for i in range(len(instruction)):
-				task = instruction[i]["task_text"]
-				if (k.replace('\n', '') in task):
-					try:
-						val = formatted_markup.pop(k)
-						instruction_coords[i].append(val)
-					except KeyError:
-						pass
-
-			if (k.replace('\n', '') in responsible):
-				try:
-					val = formatted_markup.pop(k)
-					responsible_coords.append(val)
-				except KeyError:
-					pass
-
-			if (k.replace('\n', '') in creator):
-				try:
-					val = formatted_markup.pop(k)
-					creator_coords.append(val)
-				except KeyError:
-					pass
-
-			if (k.replace('\n', '') in '.' + date):
-				try:
-					val = formatted_markup.pop(k)
-					date_coords.append(val)
-				except KeyError:
-					pass
-
-		header_coords.append("page_break")
-		name_coords.append("page_break")
-		intro_coords.append("page_break")
-		instruction_coords.append(["page_break"])
-		responsible_coords.append("page_break")
-		creator_coords.append("page_break")
-		date_coords.append("page_break")
-
-
-	header_coords = calculate_borders(header_coords)
-	
-	name_coords = calculate_borders(name_coords)
-	
-	intro_coords = calculate_borders(intro_coords)
-	
-	task_coords = []
-	for task in instruction_coords:
-		task_coords.append(calculate_borders(task, task=True))
-
-	responsible_coords = calculate_borders(responsible_coords)
-
-	creator_coords = calculate_borders(creator_coords, creator_and_date=True)
-
-	date_coords = calculate_borders(date_coords, creator_and_date=True)
-
-	# try:
-	# 	intro_coords[0][1] -= 55
-	# except TypeError:
-	# 	pass
-
-	# for i in range(len(task_coords)):
-	# 	try:
-	# 		task_coords[i][0][1] -= 80
-	# 	except TypeError:
-	# 		continue
-
-	result = [header_coords, name_coords, intro_coords, task_coords, responsible_coords,
-		creator_coords, date_coords]
-
-	return result
+	for page in pages:
+		print('Processing next page...')
+		interpreter.process_page(page)
+		layout = device.get_result()
+		for lobj in layout:
+			if isinstance(lobj, LTTextBox):
+				x1, y1_orig, x2, y2_orig, text = lobj.bbox[0], lobj.bbox[1], lobj.bbox[2], lobj.bbox[3], lobj.get_text()
+				y1 = page.mediabox[3] - y2_orig
+				y2 = page.mediabox[3] - y1_orig
+				if (y1 - y2_save < 10):
+					if(x1_save > x1):
+						x1_save = x1
+					if(x2_save < x2):
+						x2_save = x2
+					y2_save = y2
+					text_save = text_save + text
+				else:
+					if (x1_save != -1):
+						ab = [[int(x1_save * 4.15), int(y1_save * 4.2)], [int(x2_save* 4.2), int(y2_save* 4.2)], [text_save]]
+					mas_ab.append(ab)
+					x1_save, y1_save, x2_save, y2_save, text_save = x1, y1, x2, y2, text
+		ab = [[int(x1_save * 4.15), int(y1_save * 4.2)], [int(x2_save* 4.2), int(y2_save* 4.2)], [text_save]]
+		if (ab[0][0] != -1):
+			mas_ab.append(ab)     
+		x1_save, x2_save, y1_save, y2_save = -1, -1, -1, -1
+		text_save = ''
+	return mas_ab
