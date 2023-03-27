@@ -3,7 +3,7 @@ import auxil
 import consts
 import change_case
 
-from random import choice, randint
+from numpy.random import choice, randint
 import argparse
 from os import makedirs, listdir
 import re
@@ -13,14 +13,15 @@ import json
 from loguru import logger
 
 def load_samples(samples_dir):
+
 	with open(samples_dir + "/headers.txt") as headerfile:
-		header = headerfile.read().split(";;\n")
+		header = headerfile.read().split("\n")
 
 	with open(samples_dir + "/names.txt") as namefile:
-		name = namefile.read().split(";;\n")
+		name = namefile.read().split("\n")
 
 	with open(samples_dir + "/intros.txt") as introfile:
-		intro = introfile.read().split(";;\n")
+		intro = introfile.read().split("\n")
 
 	with open(samples_dir + "/instructions.json") as instructionfile:
 		instructions = json.load(instructionfile)
@@ -47,57 +48,58 @@ def load_samples(samples_dir):
 	logger.debug(f"[creator] length: {len(creator)}")
 
 	return (header, name, intro, instructions, execution_control, responsible,
-		creator, logo_list, sign_list, seal_list)
+			creator, logo_list, sign_list, seal_list)
 
-def generate(data, out, formats, size, samples_dir, is_image):
+def generate(data, formats, number_of_docs, samples_dir, is_image, out):
+
 	logger.info(f"Using formats: {formats}")
 
-	try:
-		makedirs(out+"/json")
-		if 'd' in formats:
-			makedirs(out+"/docx")
-		if 'p' in formats:
-			makedirs(out+"/pdf")
-		if 'j' in formats:
-			makedirs(out+"/jpg")
-	except FileExistsError:
-		pass
-
-	measure_time = 1
-	count = 0
-	start = time()
-	while True:
-		header = choice(data[0])
-		name = choice(data[1])
+	for idx in range(int(number_of_docs)):
+		# название организации в шапке (кто инициатор), data[0][0] - название самого предприятия
+		header = data[0][0]
+		# тип документа. для хакатона два типа "Приказ по предприятию" (data[1][0]) и "Распоряжение по отделу" (data[1][1])
+		name = data[1][0]
+		# на будущее - генерировать intro генеративными сетями
 		intro = choice(data[2])
 		
+		# выбор инструкций и исполнителей
 		all_instructions = data[3]
-		instruction = []
+		task_responsible_org = choice(data[0][1:6])
+		if task_responsible_org == "Департамент разработки":
+			task_responsible_org = choice(data[0][7:11])
+		if task_responsible_org == "Департамент внедрения и эксплуатации":
+			task_responsible_org = choice(data[0][12:])
 
-		for _ in range(randint(1, 7)):
-			instruction.append(choice(all_instructions))
+		actions = []
+		for item in all_instructions:
+			if item["task_responsible_org"] == task_responsible_org:
+				actions = item["task_texts"]
+				break
 
-		# Удаление повторяющихся элементов
-		i = []
-		for e in instruction:
-			if e not in i:
-				i.append(e)
-		instruction = i
+		instructions = choice(actions, size=randint(1,10))
 
-		execution_control = choice(data[4])
+		# выбирается фраза типа "Контроль выполнения возложить на..."
+		execution_control = choice(data[4], size=len(instructions))
+		# выбор ответственного
+		proper_persons = []
+		for item in data[5]:
+			if item[5] == task_responsible_org:
+				proper_persons.append(item)
 
-		# Шанс 33% на наличие ответственных в приказе
-		if randint(1, 3) == 1:
-			responsible_arr = choice(data[5])
-			responsible = change_case.create_responsible(execution_control, responsible_arr[0])
-			responsible_arr[0] = responsible
-		else:
-			responsible = ""
-			responsible_arr = []
-
+		responsible_arr = []
+		for _ in range(len(instructions)):
+			responsible_arr.append(proper_persons[randint(len(proper_persons))])
+		responsibles = []
+		for i in range(len(responsible_arr)):
+			responsibles.append(change_case.create_responsible(execution_control[i], responsible_arr[i][0]))
+		
+		# создатель документа
 		creator = choice(data[6])
+
+		# дата документа
 		date = auxil.generate_date(unixtime=True)
 
+		# добавление картинок (логотип, подпись, печать)
 		if is_image:
 			logo = samples_dir + "logo/" + choice(data[7])
 			sign = samples_dir + "signature/" + choice(data[8])
@@ -105,45 +107,23 @@ def generate(data, out, formats, size, samples_dir, is_image):
 		else:
 			logo, sign, seal = None, None, None
 
-		instruction = write.extend_instruction(instruction, samples_dir)
-
-		json_path = write.write_json(instruction, responsible_arr, date, out, count)
+		instructions = write.extend_instruction(instructions, responsibles, execution_control, task_responsible_org, samples_dir)
+		json_path = write.write_json(instructions, responsibles, date, out, idx)
 
 		if 'd' in formats:
-			docx_path = write.write_docx(header, name, intro, instruction,
-				responsible, creator, date[0], out, count, logo, sign, seal)
+			docx_path = write.write_docx(header, name, intro, instructions, responsibles, creator, date[0], out, idx, logo, sign, seal)
 
 		if 'p' in formats:
-			pdf_path = write.write_pdf_linux(docx_path, out, count)
-
-			generation_data = (header, name, intro, instruction,
-				responsible, creator, date[0])
+			pdf_path = write.write_pdf_linux(docx_path, out, idx)
+			generation_data = (header, name, intro, instructions, responsibles, creator, date[0])
 			
 			if is_image:
-				write.write_coords(json_path, pdf_path, generation_data, is_image=True)
+				write.write_coords(json_path, pdf_path, header, name, intro, instructions, responsibles, creator, date[0], is_image=True)
 			else:
-				write.write_coords(json_path, pdf_path, generation_data)
+				write.write_coords(json_path, pdf_path, header, name, intro, instructions, responsibles, creator, date[0])
 
 		if 'j' in formats:
-			write.write_jpg(out, count)
-
-		count += 1
-		if count % 5 == 0:
-			if auxil.getsize(out) >= size:
-				logger.warning(f"Size of {out} dir: {auxil.getsize(out)} bytes")
-				break
-
-		if measure_time:
-			if count % 100 == 0:
-				avg_speed = auxil.getsize(out) / (time()-start)
-				full_time = round((size) / (avg_speed*60), 2)
-				measure_time = 0
-				if full_time < 1:
-					logger.warning("Approximate generation time: "
-								  f"{round(full_time*60, 2)} s.")
-				else:
-					logger.warning("Approximate generation time: "
-								  f"{full_time} min.")
+			write.write_jpg(out, idx)
 
 
 def get_args():
@@ -151,12 +131,12 @@ def get_args():
 		description="Decrees generator",
 		epilog="Example: python3 gen.py 50MB -f dp -s samples -o decrees -vv")
 
-	parser.add_argument("size", help="Max size of output dir. For example: 10KB, 10MB, 10GB",
+	parser.add_argument("number_of_docs", help="Number of documents, must be an integer",
 						type=auxil.check_size_format)
 	parser.add_argument("-i", "--image", help="use images (logo, signature, seal) in decree",
 						action="store_true")
-	parser.add_argument("-f", "--format", help="formats to save (docx: d, pdf: p, jpg: j)",
-						type=auxil.parse_formats, default="dp", metavar="format")
+	parser.add_argument("-f", "--formats", help="formats to save (docx: d, pdf: p, jpg: j)",
+						type=auxil.parse_formats, default="d", metavar="formats")
 	parser.add_argument("-s", "--samples", help="path to dir with samples",
 						metavar="path", type=str, default="./samples/")
 	parser.add_argument("-o", "--out", help="path for output files",
@@ -166,17 +146,29 @@ def get_args():
 
 	return parser.parse_args()
 
+def create_output_dirs(output_dirs_path, formats):
+	try:
+		makedirs(output_dirs_path + "/json")
+		if 'd' in formats:
+			makedirs(output_dirs_path + "/docx")
+		if 'p' in formats:
+			makedirs(output_dirs_path + "/pdf")
+		if 'j' in formats:
+			makedirs(output_dirs_path + "/jpg")
+	except FileExistsError:
+		pass
+
+
 def main():
 	global args
-
 	args = get_args()
 	auxil.logger_config(args.verbose)
 
 	data = load_samples(args.samples)
-	bytes_size = auxil.size_to_bytes(args.size)
+	create_output_dirs(args.out, args.formats)
 
 	logger.warning("Generation is started...")
-	generate(data, args.out, args.format, bytes_size, args.samples, args.image)
+	generate(data, args.formats, args.number_of_docs, args.samples, args.image, args.out)
 	logger.warning("Generation is finished!")
 
 if __name__ == '__main__':
